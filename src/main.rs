@@ -1,15 +1,8 @@
 use byteorder::*;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use clap_num::maybe_hex;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
-
-#[allow(unused)]
-#[derive(Debug, Clone, ValueEnum)]
-enum State {
-    Rep,
-    Sep,
-}
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -21,34 +14,30 @@ struct Args {
     #[arg(short, long, value_parser=maybe_hex::<u32>)]
     end: u32,
 
-    #[arg(short = 'r', long)]
-    state: Option<State>,
-}
+    // if A should start as 8 or 16-bit
+    #[arg(short = 'a', long)]
+    awide: bool,
 
-#[allow(unused)]
-enum RepSep {
-    Rep(u8),
-    Sep(u8),
+    // if X and Y should start as 8 or 16-bit
+    #[arg(short = 'i', long)]
+    iwide: bool,
 }
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
     let mut file = File::open(&args.filename)?;
 
-    let offset = args.start - 0x808000;
+    let bank = (args.start >> 16) - 0x80;
+    let offset = ((args.start & 0xFFFF) - 0x8000) + bank * 0x8000;
+    // println!("{:#X} => {bank} + {offset:#X}", args.start);
     file.seek(SeekFrom::Start(offset as u64))?;
-    let end = (offset + args.end - args.start + 1) as u64;
+    let end = (offset + args.end - args.start) as u64;
 
-    let mut rep_or_sep = if let Some(state) = args.state {
-        match state {
-            State::Rep => RepSep::Rep(0),
-            State::Sep => RepSep::Sep(0),
-        }
-    } else {
-        RepSep::Rep(0)
-    };
+    let mut accu_is_16bits = args.awide;
+    let mut indexes_are_16bits = args.iwide;
+    let mut saved_accu = false;
 
-    let mut labels = vec![format!("L{:06X}", args.start)];
+    let labels = vec![format!("L{:06X}", args.start)];
     let mut assembly = vec![];
     let mut current_address = args.start;
     while file.seek(SeekFrom::Current(0))? < end {
@@ -56,334 +45,113 @@ fn main() -> io::Result<()> {
         let addr = current_address;
 
         current_address += 1;
-        let asm = match opcode {
-            0x05 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("ora ${value:02X}")
-            }
-            0x06 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("asl ${value:02X}")
-            }
-            0x08 => format!("php"),
-            0x09 => match rep_or_sep {
-                RepSep::Rep(_) => {
+        if let Some(Some(opcode)) = OPCODES.get(opcode as usize) {
+            let asm = opcode.name;
+            let follow = match &opcode.addressing {
+                Addressing::Absolute => {
                     current_address += 2;
                     let value = file.read_u16::<LittleEndian>()?;
-                    format!("ora #${value:04X}")
+                    format!(" ${value:04X}")
                 }
-                RepSep::Sep(_) => {
+                Addressing::AbsoluteLong => {
+                    current_address += 3;
+                    let value = file.read_u24::<LittleEndian>()?;
+                    format!(" ${value:06X}")
+                }
+                Addressing::AbsoluteX => todo!(),
+                Addressing::AbsoluteLongX => {
+                    current_address += 3;
+                    let value = file.read_u24::<LittleEndian>()?;
+                    format!(" ${value:06X}, X")
+                }
+                Addressing::AbsoluteY => todo!(),
+                Addressing::Accumulator => format!(" A"),
+                Addressing::Immediate(register) => {
+                    if (*register == Register::Accumulator && accu_is_16bits)
+                        || (*register == Register::Indexes && indexes_are_16bits)
+                    {
+                        current_address += 2;
+                        let value = file.read_u16::<LittleEndian>()?;
+                        format!(" #${value:04X}")
+                    } else {
+                        current_address += 1;
+                        let value = file.read_u8()?;
+                        format!(" #${value:02X}")
+                    }
+                }
+                Addressing::Immediate8 => {
                     current_address += 1;
                     let value = file.read_u8()?;
-                    format!("ora #${value:02X}")
+                    if opcode.name == "SEP" {
+                        if (value & 0x20) > 0 {
+                            accu_is_16bits = false;
+                        }
+                        if (value & 0x10) > 0 {
+                            indexes_are_16bits = false;
+                        }
+                    } else if opcode.name == "REP" {
+                        if (value & 0x20) > 0 {
+                            accu_is_16bits = true;
+                        }
+                        if (value & 0x10) > 0 {
+                            indexes_are_16bits = true;
+                        }
+                    }
+                    format!(" #${value:02X}")
                 }
-            },
-            0x0A => format!("asl"),
-            0x10 => {
-                current_address += 1;
-                let value = file.read_i8()?;
-                let new_address = current_address as i32 + value as i32;
-                labels.push(format!("L{:06X}", new_address as u32));
-                format!("bpl L{:06X}", new_address as u32)
-            }
-            0x18 => format!("clc"),
-            0x19 => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("ora.w ${value:04X}, Y")
-            }
-            0x1A => format!("inc A"),
-            0x20 => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("jsr ${value:04X}")
-            }
-            0x22 => {
-                current_address += 3;
-                let value = file.read_u24::<LittleEndian>()?;
-                labels.push(format!("L{value:06X}"));
-                format!("jsl L{value:06X}")
-            }
-            0x28 => format!("plp"),
-            0x29 => match rep_or_sep {
-                RepSep::Rep(_) => {
-                    current_address += 1;
-                    let value = file.read_u8()?;
-                    format!("and #${value:02X}")
+                Addressing::Implied => {
+                    if opcode.name == "PHP" {
+                        saved_accu = accu_is_16bits;
+                    } else if opcode.name == "PLP" {
+                        accu_is_16bits = saved_accu;
+                    }
+                    format!("")
                 }
-                RepSep::Sep(_) => {
+                Addressing::Indirect => {
                     current_address += 2;
                     let value = file.read_u16::<LittleEndian>()?;
-                    format!("and.w #${value:04X}")
+                    format!(" (${value:04X})")
                 }
-            },
-            0x30 => {
-                current_address += 1;
-                let value = file.read_i8()?;
-                let new_address = current_address as i32 + value as i32;
-                labels.push(format!("L{:06X}", new_address as u32));
-                format!("bmi L{:06X}", new_address as u32)
-            }
-            0x39 => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("and.w ${value:04X}, Y")
-            }
-            0x3A => format!("dec A"),
-            0x48 => format!("pha"),
-            0x49 => match rep_or_sep {
-                RepSep::Rep(_) => {
-                    current_address += 2;
-                    let value = file.read_u16::<LittleEndian>()?;
-                    format!("eor.w #${value:02X}")
-                }
-                RepSep::Sep(_) => {
+                Addressing::IndirectY => todo!(),
+                Addressing::Relative => {
+                    // todo: convert to addr is branch
                     current_address += 1;
                     let value = file.read_u8()?;
-                    format!("eor #${value:02X}")
+                    format!(" ${value:02X}")
                 }
-            },
-            0x4A => format!("lsr"),
-            0x4B => format!("phk"),
-            0x4C => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("jmp ${value:04X}")
-            }
-            0x5A => format!("phy"),
-            0x60 => format!("rts"),
-            0x64 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("stz ${value:02X}")
-            }
-            0x65 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("adc ${value:02X}")
-            }
-            0x68 => format!("pla"),
-            0x69 => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("adc.w #${value:04X}")
-            }
-            0x6B => format!("rtl"),
-            0x70 => {
-                current_address += 1;
-                let value = file.read_i8()?;
-                let new_address = current_address as i32 + value as i32;
-                labels.push(format!("L{:06X}", new_address as u32));
-                format!("bvs L{:06X}", new_address as u32)
-            }
-            0x7A => format!("ply"),
-            0x7F => {
-                current_address += 3;
-                let value = file.read_u24::<LittleEndian>()?;
-                format!("adc.l ${value:06X}, X")
-            }
-            0x80 => {
-                current_address += 1;
-                let value = file.read_i8()?;
-                let new_address = current_address as i32 + value as i32;
-                labels.push(format!("L{:06X}", new_address as u32));
-                format!("bra L{:06X}", new_address as u32)
-            }
-            0x82 => {
-                current_address += 2;
-                let value = file.read_i16::<LittleEndian>()?;
-                let new_address = current_address as i32 + value as i32;
-                labels.push(format!("L{:06X}", new_address as u32));
-                format!("brl L{:06X}", new_address as u32)
-            }
-            0x85 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("sta ${value:02X}")
-            }
-            0x89 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("bit #${value:02X}")
-            }
-            0x8A => format!("txa"),
-            0x8B => format!("phb"),
-            0x8D => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("sta.w ${value:04X}")
-            }
-            0x8F => {
-                current_address += 3;
-                let value = file.read_u24::<LittleEndian>()?;
-                format!("sta.l ${value:06X}")
-            }
-            0x90 => {
-                current_address += 1;
-                let value = file.read_i8()?;
-                let new_address = current_address as i32 + value as i32;
-                labels.push(format!("L{:06X}", new_address as u32));
-                format!("bcc L{:06X}", new_address as u32)
-            }
-            0x98 => format!("tya"),
-            0x9D => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("sta.w ${value:04X}, X")
-            }
-            0x9F => {
-                current_address += 3;
-                let value = file.read_u24::<LittleEndian>()?;
-                format!("sta.l ${value:06X}, X")
-            }
-            0xA0 => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("ldy.w #${value:04X}")
-            }
-            0xA2 => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("ldx.w #${value:04X}")
-            }
-            0xA4 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("ldy ${value:02X}")
-            }
-            0xA5 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("lda ${value:02X}")
-            }
-            0xA6 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("ldx ${value:02X}")
-            }
-            0xA8 => format!("tay"),
-            0xA9 => match rep_or_sep {
-                RepSep::Rep(_) => {
+                Addressing::RelativeLong => {
+                    // todo: convert to addr is branch
                     current_address += 2;
                     let value = file.read_u16::<LittleEndian>()?;
-                    format!("lda.w #${value:04X}")
+                    format!(" ${value:04X}")
                 }
-                RepSep::Sep(_) => {
+                Addressing::XIndirect => {
+                    println!("{opcode:?}",);
+                    todo!();
+                }
+                Addressing::ZeroPage => {
                     current_address += 1;
                     let value = file.read_u8()?;
-                    format!("lda #${value:02X}")
+                    format!(" ${value:02X}")
                 }
-            },
-            0xAA => format!("tax"),
-            0xAB => format!("plb"),
-            0xAD => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("lda.w ${value:04X}")
-            }
-            0xAF => {
-                current_address += 3;
-                let value = file.read_u24::<LittleEndian>()?;
-                format!("lda.l ${value:06X}")
-            }
-            0xB0 => {
-                current_address += 1;
-                let value = file.read_i8()?;
-                let new_address = current_address as i32 + value as i32;
-                labels.push(format!("L{:06X}", new_address as u32));
-                format!("bcs L{:06X}", new_address as u32)
-            }
-            0xB7 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("lda [${value:02X}], Y")
-            }
-            0xBB => format!("tyx"),
-            0xBD => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("lda.w ${value:04X}, X")
-            }
-            0xBF => {
-                current_address += 3;
-                let value = file.read_u24::<LittleEndian>()?;
-                format!("lda.l ${value:06X}, X")
-            }
-            0xC0 => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("cpy.w #${value:04X}")
-            }
-            0xC2 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                rep_or_sep = RepSep::Rep(value);
-                format!("rep #${value:02X}")
-            }
-            0xC6 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("dec ${value:02X}")
-            }
-            0xC8 => format!("iny"),
-            0xC9 => match rep_or_sep {
-                RepSep::Rep(_) => {
-                    current_address += 2;
-                    let value = file.read_u16::<LittleEndian>()?;
-                    format!("cmp.w #${value:04X}")
-                }
-                RepSep::Sep(_) => {
+                Addressing::ZeroPageX => {
                     current_address += 1;
                     let value = file.read_u8()?;
-                    format!("cmp #${value:02X}")
+                    format!(" (${value:02X}, X)")
                 }
-            },
-            0xD0 => {
-                current_address += 1;
-                let value = file.read_i8()?;
-                let new_address = current_address as i32 + value as i32;
-                labels.push(format!("L{:06X}", new_address as u32));
-                format!("bne L{:06X}", new_address as u32)
-            }
-            0xDA => format!("phx"),
-            0xDC => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("jml [${value:04X}]")
-            }
-            0xE0 => {
-                current_address += 2;
-                let value = file.read_u16::<LittleEndian>()?;
-                format!("cpx.w #${value:04X}")
-            }
-            0xE2 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                rep_or_sep = RepSep::Sep(value);
-                format!("sep #${value:02X}")
-            }
-            0xE6 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                format!("inc ${value:02X}")
-            }
-            0xEB => format!("xba"),
-            0xF0 => {
-                current_address += 1;
-                let value = file.read_u8()?;
-                labels.push(format!("L{:06X}", current_address + value as u32));
-                format!("beq L{:06X}", current_address + value as u32)
-            }
-            0xFA => format!("plx"),
-            _ => {
-                println!("{assembly:?}");
-                panic!("unknown opcode: {opcode:#X}");
-            }
-        };
+                Addressing::ZeroPageY => {
+                    current_address += 1;
+                    let value = file.read_u8()?;
+                    format!(" (${value:02X}), Y")
+                }
+            };
 
-        assembly.push((format!("L{addr:06X}"), asm));
+            let output = format!("{asm}{follow}");
+            // println!("{}{follow}", asm.to_lowercase());
+            assembly.push((format!("L{addr:06X}"), output));
+        } else {
+            panic!("{opcode:#X} unhandled");
+        }
     }
 
     for (label, asm) in assembly {
@@ -395,3 +163,794 @@ fn main() -> io::Result<()> {
 
     Ok(())
 }
+
+#[derive(Debug)]
+enum Addressing {
+    Absolute,
+    AbsoluteLong,
+    AbsoluteX,
+    AbsoluteLongX,
+    AbsoluteY,
+    Accumulator,
+    Immediate(Register),
+    Immediate8,
+    Implied,
+    Indirect,
+    IndirectY,
+    Relative,
+    RelativeLong,
+    XIndirect,
+    ZeroPage,
+    ZeroPageX,
+    ZeroPageY,
+}
+
+#[derive(Debug, PartialEq)]
+enum Register {
+    Accumulator,
+    Indexes,
+}
+
+#[derive(Debug)]
+struct Opcode {
+    name: &'static str,
+    addressing: Addressing,
+}
+
+const OPCODES: [Option<Opcode>; 256] = [
+    // 0x00
+    Some(Opcode {
+        name: "BRK",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::XIndirect,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "ASL",
+        addressing: Addressing::ZeroPage,
+    }),
+    None,
+    Some(Opcode {
+        name: "PHP",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::Immediate(Register::Accumulator),
+    }),
+    Some(Opcode {
+        name: "ASL",
+        addressing: Addressing::Accumulator,
+    }),
+    Some(Opcode {
+        name: "PHD",
+        addressing: Addressing::Implied,
+    }),
+    None,
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "ASL",
+        addressing: Addressing::Absolute,
+    }),
+    None,
+    // 0x10
+    Some(Opcode {
+        name: "BPL",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::IndirectY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "ASL",
+        addressing: Addressing::ZeroPageX,
+    }),
+    None,
+    Some(Opcode {
+        name: "CLC",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::AbsoluteY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "ASL",
+        addressing: Addressing::AbsoluteX,
+    }),
+    None,
+    // 0x20
+    Some(Opcode {
+        name: "JSR",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::XIndirect,
+    }),
+    Some(Opcode {
+        name: "JSL",
+        addressing: Addressing::AbsoluteLong,
+    }),
+    None,
+    Some(Opcode {
+        name: "BIT",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "ROL",
+        addressing: Addressing::ZeroPage,
+    }),
+    None,
+    Some(Opcode {
+        name: "PLP",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::Immediate(Register::Accumulator),
+    }),
+    Some(Opcode {
+        name: "ROL",
+        addressing: Addressing::Accumulator,
+    }),
+    None,
+    Some(Opcode {
+        name: "BIT",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "ROL",
+        addressing: Addressing::Absolute,
+    }),
+    None,
+    // 0x30
+    Some(Opcode {
+        name: "BMI",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::IndirectY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "ROL",
+        addressing: Addressing::ZeroPageX,
+    }),
+    None,
+    Some(Opcode {
+        name: "SEC",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::AbsoluteY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "ROL",
+        addressing: Addressing::AbsoluteX,
+    }),
+    None,
+    // 0x40
+    Some(Opcode {
+        name: "RTI",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "EOR",
+        addressing: Addressing::XIndirect,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "EOR",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "LSR",
+        addressing: Addressing::ZeroPage,
+    }),
+    None,
+    Some(Opcode {
+        name: "PHA",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "EOR",
+        addressing: Addressing::Immediate(Register::Accumulator),
+    }),
+    Some(Opcode {
+        name: "LSR",
+        addressing: Addressing::Accumulator,
+    }),
+    None,
+    Some(Opcode {
+        name: "JMP",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "EOR",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "LSR",
+        addressing: Addressing::Absolute,
+    }),
+    None,
+    // 0x50
+    Some(Opcode {
+        name: "BVC",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "EOR",
+        addressing: Addressing::IndirectY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "EOR",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "LSR",
+        addressing: Addressing::ZeroPageX,
+    }),
+    None,
+    Some(Opcode {
+        name: "CLI",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "EOR",
+        addressing: Addressing::AbsoluteY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "EOR",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "LSR",
+        addressing: Addressing::AbsoluteX,
+    }),
+    None,
+    // 0x60
+    Some(Opcode {
+        name: "RTS",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::XIndirect,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "ROR",
+        addressing: Addressing::ZeroPage,
+    }),
+    None,
+    Some(Opcode {
+        name: "PLA",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::Immediate(Register::Accumulator),
+    }),
+    Some(Opcode {
+        name: "ROR",
+        addressing: Addressing::Accumulator,
+    }),
+    None,
+    Some(Opcode {
+        name: "JMP",
+        addressing: Addressing::Indirect,
+    }),
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "ROR",
+        addressing: Addressing::Absolute,
+    }),
+    None,
+    // 0x70
+    Some(Opcode {
+        name: "BVS",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::IndirectY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "ROR",
+        addressing: Addressing::ZeroPageX,
+    }),
+    None,
+    Some(Opcode {
+        name: "SEI",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::AbsoluteY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "ROR",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::AbsoluteLongX,
+    }),
+    // 0x80
+    Some(Opcode {
+        name: "BRA",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::XIndirect,
+    }),
+    Some(Opcode {
+        name: "BRL",
+        addressing: Addressing::RelativeLong,
+    }),
+    None,
+    Some(Opcode {
+        name: "STY",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "STX",
+        addressing: Addressing::ZeroPage,
+    }),
+    None,
+    Some(Opcode {
+        name: "DEY",
+        addressing: Addressing::Implied,
+    }),
+    None,
+    Some(Opcode {
+        name: "TXA",
+        addressing: Addressing::Implied,
+    }),
+    None,
+    Some(Opcode {
+        name: "STY",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "STX",
+        addressing: Addressing::Absolute,
+    }),
+    None,
+    // 0x90
+    Some(Opcode {
+        name: "BCC",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::IndirectY,
+    }),
+    None,
+    None,
+    Some(Opcode {
+        name: "STY",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "STX",
+        addressing: Addressing::ZeroPageY,
+    }),
+    None,
+    Some(Opcode {
+        name: "TYA",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::AbsoluteY,
+    }),
+    Some(Opcode {
+        name: "TXS",
+        addressing: Addressing::Implied,
+    }),
+    None,
+    Some(Opcode {
+        name: "STZ",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::AbsoluteX,
+    }),
+    None,
+    None,
+    // 0xA0
+    Some(Opcode {
+        name: "LDY",
+        addressing: Addressing::Immediate(Register::Indexes),
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::XIndirect,
+    }),
+    Some(Opcode {
+        name: "LDX",
+        addressing: Addressing::Immediate(Register::Indexes),
+    }),
+    None,
+    Some(Opcode {
+        name: "LDY",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "LDX",
+        addressing: Addressing::ZeroPage,
+    }),
+    None,
+    Some(Opcode {
+        name: "TAY",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::Immediate(Register::Accumulator),
+    }),
+    Some(Opcode {
+        name: "TAX",
+        addressing: Addressing::Implied,
+    }),
+    None,
+    Some(Opcode {
+        name: "LDY",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "LDX",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::AbsoluteLong,
+    }),
+    // 0xB0
+    Some(Opcode {
+        name: "BCS",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::IndirectY,
+    }),
+    None,
+    None,
+    Some(Opcode {
+        name: "LDY",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "LDX",
+        addressing: Addressing::ZeroPageY,
+    }),
+    None,
+    Some(Opcode {
+        name: "CLV",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::AbsoluteY,
+    }),
+    Some(Opcode {
+        name: "TSX",
+        addressing: Addressing::Implied,
+    }),
+    None,
+    Some(Opcode {
+        name: "LDY",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "LDX",
+        addressing: Addressing::AbsoluteY,
+    }),
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::AbsoluteLongX,
+    }),
+    // 0xC0
+    Some(Opcode {
+        name: "CPY",
+        addressing: Addressing::Immediate(Register::Indexes),
+    }),
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::XIndirect,
+    }),
+    Some(Opcode {
+        name: "REP",
+        addressing: Addressing::Immediate8,
+    }),
+    None,
+    Some(Opcode {
+        name: "CPY",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "DEC",
+        addressing: Addressing::ZeroPage,
+    }),
+    None,
+    Some(Opcode {
+        name: "INY",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::Immediate(Register::Accumulator),
+    }),
+    Some(Opcode {
+        name: "DEX",
+        addressing: Addressing::Implied,
+    }),
+    None,
+    Some(Opcode {
+        name: "CPY",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "DEC",
+        addressing: Addressing::Absolute,
+    }),
+    None,
+    // 0xD0
+    Some(Opcode {
+        name: "BNE",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::IndirectY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "DEC",
+        addressing: Addressing::ZeroPageX,
+    }),
+    None,
+    Some(Opcode {
+        name: "CLD",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::AbsoluteY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "DEC",
+        addressing: Addressing::AbsoluteX,
+    }),
+    None,
+    // 0xE0
+    Some(Opcode {
+        name: "CPX",
+        addressing: Addressing::Immediate(Register::Indexes),
+    }),
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::XIndirect,
+    }),
+    Some(Opcode {
+        name: "SEP",
+        addressing: Addressing::Immediate8,
+    }),
+    None,
+    Some(Opcode {
+        name: "CPX",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::ZeroPage,
+    }),
+    Some(Opcode {
+        name: "INC",
+        addressing: Addressing::ZeroPage,
+    }),
+    None,
+    Some(Opcode {
+        name: "INX",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::Immediate(Register::Accumulator),
+    }),
+    Some(Opcode {
+        name: "NOP",
+        addressing: Addressing::Implied,
+    }),
+    None,
+    Some(Opcode {
+        name: "CPX",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::Absolute,
+    }),
+    Some(Opcode {
+        name: "INC",
+        addressing: Addressing::Absolute,
+    }),
+    None,
+    // 0xF0
+    Some(Opcode {
+        name: "BEQ",
+        addressing: Addressing::Relative,
+    }),
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::IndirectY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::ZeroPageX,
+    }),
+    Some(Opcode {
+        name: "INC",
+        addressing: Addressing::ZeroPageX,
+    }),
+    None,
+    Some(Opcode {
+        name: "SED",
+        addressing: Addressing::Implied,
+    }),
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::AbsoluteY,
+    }),
+    None,
+    None,
+    None,
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::AbsoluteX,
+    }),
+    Some(Opcode {
+        name: "INC",
+        addressing: Addressing::AbsoluteX,
+    }),
+    None,
+];
