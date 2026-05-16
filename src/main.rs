@@ -15,12 +15,16 @@ struct Args {
     end: u32,
 
     // if A should start as 8 or 16-bit
-    #[arg(short = 'a', long)]
+    #[arg(short, long)]
     awide: bool,
 
     // if X and Y should start as 8 or 16-bit
-    #[arg(short = 'i', long)]
+    #[arg(short, long)]
     iwide: bool,
+
+    // prints lowercase opcodes
+    #[arg(short, long)]
+    lower: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -35,6 +39,7 @@ fn main() -> io::Result<()> {
 
     let mut accu_is_16bits = args.awide;
     let mut indexes_are_16bits = args.iwide;
+    let lowercase_opcodes = args.lower;
     let mut saved_accu = false;
 
     let mut labels = vec![format!("L{:06X}", args.start)];
@@ -104,10 +109,9 @@ fn main() -> io::Result<()> {
                     format!(" #${value:02X}")
                 }
                 Addressing::Implied => {
-                    if opcode.name == "PHP" {
-                        saved_accu = accu_is_16bits;
-                    } else if opcode.name == "PLP" {
-                        accu_is_16bits = saved_accu;
+                    if opcode.name == "PLP" {
+                        accu_is_16bits = true;
+                        indexes_are_16bits = true;
                     }
                     format!("")
                 }
@@ -145,6 +149,11 @@ fn main() -> io::Result<()> {
                     let value = file.read_u8()?;
                     format!(" ${value:02X}")
                 }
+                Addressing::ZeroPageLong => {
+                    current_address += 1;
+                    let value = file.read_u8()?;
+                    format!(" [${value:02X}]")
+                }
                 Addressing::ZeroPageX => {
                     current_address += 1;
                     let value = file.read_u8()?;
@@ -157,11 +166,17 @@ fn main() -> io::Result<()> {
                 }
             };
 
+            let asm = if lowercase_opcodes {
+                asm.to_lowercase()
+            } else {
+                asm.to_string()
+            };
+
             let output = format!("{asm}{follow}");
-            println!("{}{follow}", asm.to_lowercase());
+            println!("{asm}{follow}");
             assembly.push((format!("L{addr:06X}"), output));
         } else {
-            panic!("{opcode:#X} unhandled at {current_address:06X}");
+            panic!("{opcode:#X} unhandled at {:06X}", current_address - 1);
         }
     }
 
@@ -193,6 +208,7 @@ enum Addressing {
     RelativeLong,
     XIndirect,
     ZeroPage,
+    ZeroPageLong,
     ZeroPageX,
     ZeroPageY,
 }
@@ -497,7 +513,10 @@ const OPCODES: [Option<Opcode>; 256] = [
     }),
     None,
     None,
-    None,
+    Some(Opcode {
+        name: "STZ",
+        addressing: Addressing::ZeroPage,
+    }),
     Some(Opcode {
         name: "ADC",
         addressing: Addressing::ZeroPage,
@@ -606,12 +625,18 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "STX",
         addressing: Addressing::ZeroPage,
     }),
-    None,
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::ZeroPageLong,
+    }),
     Some(Opcode {
         name: "DEY",
         addressing: Addressing::Implied,
     }),
-    None,
+    Some(Opcode {
+        name: "BIT",
+        addressing: Addressing::Immediate(Register::Accumulator),
+    }),
     Some(Opcode {
         name: "TXA",
         addressing: Addressing::Implied,
@@ -877,7 +902,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "CMP",
         addressing: Addressing::AbsoluteY,
     }),
-    None,
+    Some(Opcode {
+        name: "PHX",
+        addressing: Addressing::Implied,
+    }),
     None,
     None,
     Some(Opcode {
@@ -928,7 +956,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "NOP",
         addressing: Addressing::Implied,
     }),
-    None,
+    Some(Opcode {
+        name: "XBA",
+        addressing: Addressing::Implied,
+    }),
     Some(Opcode {
         name: "CPX",
         addressing: Addressing::Absolute,
