@@ -35,12 +35,11 @@ fn main() -> io::Result<()> {
     let offset = ((args.start & 0xFFFF) - 0x8000) + bank * 0x8000;
     // println!("{:#X} => {bank} + {offset:#X}", args.start);
     file.seek(SeekFrom::Start(offset as u64))?;
-    let end = (offset + args.end - args.start) as u64;
+    let end = (offset + args.end - args.start + 1) as u64;
 
     let mut accu_is_16bits = args.awide;
     let mut indexes_are_16bits = args.iwide;
     let lowercase_opcodes = args.lower;
-    let mut saved_accu = false;
 
     let mut labels = vec![format!("L{:06X}", args.start)];
     let mut assembly = vec![];
@@ -125,7 +124,10 @@ fn main() -> io::Result<()> {
                     let value = file.read_u8()?;
                     format!(" [${value:02X}],Y")
                 }
-                Addressing::IndirectY => todo!(),
+                Addressing::IndirectY => {
+                    println!("{current_address:06X}: indirect y");
+                    todo!()
+                }
                 Addressing::Relative => {
                     current_address += 1;
                     let value = file.read_i8()?;
@@ -141,8 +143,9 @@ fn main() -> io::Result<()> {
                     format!(" L{target:06X}")
                 }
                 Addressing::XIndirect => {
-                    println!("{opcode:?}",);
-                    todo!();
+                    current_address += 1;
+                    let value = file.read_u16::<LittleEndian>()?;
+                    format!(" (${value:04X},X)")
                 }
                 Addressing::ZeroPage => {
                     current_address += 1;
@@ -302,7 +305,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "ORA",
         addressing: Addressing::AbsoluteY,
     }),
-    None,
+    Some(Opcode {
+        name: "INC",
+        addressing: Addressing::Accumulator,
+    }),
     None,
     None,
     Some(Opcode {
@@ -538,7 +544,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "ROR",
         addressing: Addressing::Accumulator,
     }),
-    None,
+    Some(Opcode {
+        name: "RTL",
+        addressing: Addressing::Implied,
+    }),
     Some(Opcode {
         name: "JMP",
         addressing: Addressing::Indirect,
@@ -654,7 +663,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "STX",
         addressing: Addressing::Absolute,
     }),
-    None,
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::AbsoluteLong,
+    }),
     // 0x90
     Some(Opcode {
         name: "BCC",
@@ -734,7 +746,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "LDX",
         addressing: Addressing::ZeroPage,
     }),
-    None,
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::ZeroPageLong,
+    }),
     Some(Opcode {
         name: "TAY",
         addressing: Addressing::Implied,
@@ -803,7 +818,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "TSX",
         addressing: Addressing::Implied,
     }),
-    None,
+    Some(Opcode {
+        name: "TYX",
+        addressing: Addressing::Implied,
+    }),
     Some(Opcode {
         name: "LDY",
         addressing: Addressing::AbsoluteX,
@@ -1002,9 +1020,15 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "SBC",
         addressing: Addressing::AbsoluteY,
     }),
+    Some(Opcode {
+        name: "PLX",
+        addressing: Addressing::Implied,
+    }),
     None,
-    None,
-    None,
+    Some(Opcode {
+        name: "JSR",
+        addressing: Addressing::XIndirect,
+    }),
     Some(Opcode {
         name: "SBC",
         addressing: Addressing::AbsoluteX,
