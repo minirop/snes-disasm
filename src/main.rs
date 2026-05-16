@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
     let mut indexes_are_16bits = args.iwide;
     let mut saved_accu = false;
 
-    let labels = vec![format!("L{:06X}", args.start)];
+    let mut labels = vec![format!("L{:06X}", args.start)];
     let mut assembly = vec![];
     let mut current_address = args.start;
     while file.seek(SeekFrom::Current(0))? < end {
@@ -58,11 +58,15 @@ fn main() -> io::Result<()> {
                     let value = file.read_u24::<LittleEndian>()?;
                     format!(" ${value:06X}")
                 }
-                Addressing::AbsoluteX => todo!(),
+                Addressing::AbsoluteX => {
+                    current_address += 2;
+                    let value = file.read_u16::<LittleEndian>()?;
+                    format!(" ${value:04X},X")
+                }
                 Addressing::AbsoluteLongX => {
                     current_address += 3;
                     let value = file.read_u24::<LittleEndian>()?;
-                    format!(" ${value:06X}, X")
+                    format!(" ${value:06X},X")
                 }
                 Addressing::AbsoluteY => todo!(),
                 Addressing::Accumulator => format!(" A"),
@@ -112,18 +116,25 @@ fn main() -> io::Result<()> {
                     let value = file.read_u16::<LittleEndian>()?;
                     format!(" (${value:04X})")
                 }
-                Addressing::IndirectY => todo!(),
-                Addressing::Relative => {
-                    // todo: convert to addr is branch
+                Addressing::IndirectLongY => {
                     current_address += 1;
                     let value = file.read_u8()?;
-                    format!(" ${value:02X}")
+                    format!(" [${value:02X}],Y")
+                }
+                Addressing::IndirectY => todo!(),
+                Addressing::Relative => {
+                    current_address += 1;
+                    let value = file.read_i8()?;
+                    let target = current_address.strict_add_signed(value as i32);
+                    labels.push(format!("L{target:06X}"));
+                    format!(" L{target:06X}")
                 }
                 Addressing::RelativeLong => {
-                    // todo: convert to addr is branch
                     current_address += 2;
-                    let value = file.read_u16::<LittleEndian>()?;
-                    format!(" ${value:04X}")
+                    let value = file.read_i16::<LittleEndian>()?;
+                    let target = current_address.strict_add_signed(value as i32);
+                    labels.push(format!("L{target:06X}"));
+                    format!(" L{target:06X}")
                 }
                 Addressing::XIndirect => {
                     println!("{opcode:?}",);
@@ -137,20 +148,20 @@ fn main() -> io::Result<()> {
                 Addressing::ZeroPageX => {
                     current_address += 1;
                     let value = file.read_u8()?;
-                    format!(" (${value:02X}, X)")
+                    format!(" (${value:02X},X)")
                 }
                 Addressing::ZeroPageY => {
                     current_address += 1;
                     let value = file.read_u8()?;
-                    format!(" (${value:02X}), Y")
+                    format!(" (${value:02X}),Y")
                 }
             };
 
             let output = format!("{asm}{follow}");
-            // println!("{}{follow}", asm.to_lowercase());
+            println!("{}{follow}", asm.to_lowercase());
             assembly.push((format!("L{addr:06X}"), output));
         } else {
-            panic!("{opcode:#X} unhandled");
+            panic!("{opcode:#X} unhandled at {current_address:06X}");
         }
     }
 
@@ -168,14 +179,15 @@ fn main() -> io::Result<()> {
 enum Addressing {
     Absolute,
     AbsoluteLong,
-    AbsoluteX,
     AbsoluteLongX,
+    AbsoluteX,
     AbsoluteY,
     Accumulator,
     Immediate(Register),
     Immediate8,
     Implied,
     Indirect,
+    IndirectLongY,
     IndirectY,
     Relative,
     RelativeLong,
@@ -368,7 +380,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "AND",
         addressing: Addressing::AbsoluteY,
     }),
-    None,
+    Some(Opcode {
+        name: "DEC",
+        addressing: Addressing::Accumulator,
+    }),
     None,
     None,
     Some(Opcode {
@@ -456,7 +471,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "EOR",
         addressing: Addressing::AbsoluteY,
     }),
-    None,
+    Some(Opcode {
+        name: "PHY",
+        addressing: Addressing::Implied,
+    }),
     None,
     None,
     Some(Opcode {
@@ -544,7 +562,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "ADC",
         addressing: Addressing::AbsoluteY,
     }),
-    None,
+    Some(Opcode {
+        name: "PLY",
+        addressing: Addressing::Implied,
+    }),
     None,
     None,
     Some(Opcode {
@@ -632,7 +653,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "STX",
         addressing: Addressing::ZeroPageY,
     }),
-    None,
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::IndirectLongY,
+    }),
     Some(Opcode {
         name: "TYA",
         addressing: Addressing::Implied,
@@ -655,7 +679,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         addressing: Addressing::AbsoluteX,
     }),
     None,
-    None,
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::AbsoluteLongX,
+    }),
     // 0xA0
     Some(Opcode {
         name: "LDY",
@@ -735,7 +762,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "LDX",
         addressing: Addressing::ZeroPageY,
     }),
-    None,
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::IndirectLongY,
+    }),
     Some(Opcode {
         name: "CLV",
         addressing: Addressing::Implied,
