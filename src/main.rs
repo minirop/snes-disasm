@@ -1116,7 +1116,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "INC",
         addressing: Addressing::ZeroPageX,
     }),
-    None,
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::IndirectLongY,
+    }),
     Some(Opcode {
         name: "SED",
         addressing: Addressing::Implied,
@@ -1142,5 +1145,8 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "INC",
         addressing: Addressing::AbsoluteX,
     }),
-    None,
+    Some(Opcode {
+        name: "SBC",
+        addressing: Addressing::AbsoluteLongX,
+    }),
 ];
