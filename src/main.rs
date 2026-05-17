@@ -14,13 +14,13 @@ struct Args {
     #[arg(short, long, value_parser=maybe_hex::<u32>)]
     end: u32,
 
-    // if A should start as 8 or 16-bit
+    // if set A starts as 8-bit
     #[arg(short, long)]
-    awide: bool,
+    accu: bool,
 
-    // if X and Y should start as 8 or 16-bit
+    // if set X and Y starts as 8-bit
     #[arg(short, long)]
-    iwide: bool,
+    index: bool,
 
     // prints lowercase opcodes
     #[arg(short, long)]
@@ -39,12 +39,11 @@ fn main() -> io::Result<()> {
 
     let bank = (args.start >> 16) - 0x80;
     let offset = ((args.start & 0xFFFF) - 0x8000) + bank * 0x8000;
-    // println!("{:#X} => {bank} + {offset:#X}", args.start);
     file.seek(SeekFrom::Start(offset as u64))?;
     let end = (offset + args.end - args.start + 1) as u64;
 
-    let mut accu_is_16bits = args.awide;
-    let mut indexes_are_16bits = args.iwide;
+    let mut accu_is_16bits = !args.accu;
+    let mut indexes_are_16bits = !args.index;
     let lowercase_opcodes = args.lower;
     let break_on_brk = args.brk;
 
