@@ -95,11 +95,6 @@ fn main() -> io::Result<()> {
                     format!(" (${value:04X},X)")
                 }
                 Addressing::Accumulator => format!(" A"),
-                Addressing::Address16 => {
-                    current_address += 2;
-                    let value = file.read_u16::<LittleEndian>()?;
-                    format!(" ${value:04X}")
-                }
                 Addressing::Immediate(register) => {
                     if (*register == Register::Accumulator && accu_is_16bits)
                         || (*register == Register::Indexes && indexes_are_16bits)
@@ -247,7 +242,6 @@ enum Addressing {
     AbsoluteY,
     AbsoluteXIndirect,
     Accumulator,
-    Address16,
     Immediate(Register),
     Immediate8,
     Implied,
@@ -1106,7 +1100,7 @@ const OPCODES: [Option<Opcode>; 256] = [
     None,
     Some(Opcode {
         name: "PEA",
-        addressing: Addressing::Address16,
+        addressing: Addressing::Absolute,
     }),
     Some(Opcode {
         name: "SBC",
