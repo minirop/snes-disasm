@@ -160,8 +160,8 @@ fn main() -> io::Result<()> {
                 }
                 Addressing::XIndirect => {
                     current_address += 1;
-                    let value = file.read_u16::<LittleEndian>()?;
-                    format!(" (${value:04X},X)")
+                    let value = file.read_u8()?;
+                    format!(" (${value:02X},X)")
                 }
                 Addressing::ZeroPage => {
                     current_address += 1;
@@ -525,7 +525,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         addressing: Addressing::Implied,
     }),
     None,
-    None,
+    Some(Opcode {
+        name: "JML",
+        addressing: Addressing::AbsoluteLong,
+    }),
     Some(Opcode {
         name: "EOR",
         addressing: Addressing::AbsoluteX,
