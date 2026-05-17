@@ -25,7 +25,13 @@ struct Args {
     // prints lowercase opcodes
     #[arg(short, long)]
     lower: bool,
+
+    // stops when hitting a BRK opcode
+    #[arg(short, long)]
+    brk: bool,
 }
+
+const END_OF_BLOCK: [&str; 3] = ["RTS", "RTL", "JMP"];
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
@@ -40,6 +46,7 @@ fn main() -> io::Result<()> {
     let mut accu_is_16bits = args.awide;
     let mut indexes_are_16bits = args.iwide;
     let lowercase_opcodes = args.lower;
+    let break_on_brk = args.brk;
 
     let mut labels = vec![format!("L{:06X}", args.start)];
     let mut assembly = vec![];
@@ -57,6 +64,11 @@ fn main() -> io::Result<()> {
                     current_address += 2;
                     let value = file.read_u16::<LittleEndian>()?;
                     format!(" ${value:04X}")
+                }
+                Addressing::AbsoluteIndirectLong => {
+                    current_address += 2;
+                    let value = file.read_u16::<LittleEndian>()?;
+                    format!(" [${value:04X}]")
                 }
                 Addressing::AbsoluteLong => {
                     current_address += 3;
@@ -77,6 +89,11 @@ fn main() -> io::Result<()> {
                     current_address += 2;
                     let value = file.read_u16::<LittleEndian>()?;
                     format!(" ${value:04X},Y")
+                }
+                Addressing::AbsoluteXIndirect => {
+                    current_address += 2;
+                    let value = file.read_u16::<LittleEndian>()?;
+                    format!(" (${value:04X},X)")
                 }
                 Addressing::Accumulator => format!(" A"),
                 Addressing::Address16 => {
@@ -185,6 +202,13 @@ fn main() -> io::Result<()> {
                 }
             };
 
+            if break_on_brk && asm == "BRK" {
+                println!("BRK hit!");
+                return Ok(());
+            }
+
+            let is_end_of_block = END_OF_BLOCK.contains(&asm);
+
             let asm = if lowercase_opcodes {
                 asm.to_lowercase()
             } else {
@@ -194,6 +218,11 @@ fn main() -> io::Result<()> {
             let output = format!("{asm}{follow}");
             println!("{asm}{follow}");
             assembly.push((format!("L{addr:06X}"), output));
+
+            if is_end_of_block {
+                labels.push(format!("L{current_address:06X}"));
+                assembly.push(("".into(), "".into()));
+            }
         } else {
             panic!("{opcode:#X} unhandled at {:06X}", current_address - 1);
         }
@@ -212,10 +241,12 @@ fn main() -> io::Result<()> {
 #[derive(Debug)]
 enum Addressing {
     Absolute,
+    AbsoluteIndirectLong,
     AbsoluteLong,
     AbsoluteLongX,
     AbsoluteX,
     AbsoluteY,
+    AbsoluteXIndirect,
     Accumulator,
     Address16,
     Immediate(Register),
@@ -290,7 +321,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "PHD",
         addressing: Addressing::Implied,
     }),
-    None,
+    Some(Opcode {
+        name: "TSB",
+        addressing: Addressing::Absolute,
+    }),
     Some(Opcode {
         name: "ORA",
         addressing: Addressing::Absolute,
@@ -337,7 +371,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         addressing: Addressing::Accumulator,
     }),
     None,
-    None,
+    Some(Opcode {
+        name: "TRB",
+        addressing: Addressing::Absolute,
+    }),
     Some(Opcode {
         name: "ORA",
         addressing: Addressing::AbsoluteX,
@@ -564,7 +601,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "ROR",
         addressing: Addressing::ZeroPage,
     }),
-    None,
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::ZeroPageLong,
+    }),
     Some(Opcode {
         name: "PLA",
         addressing: Addressing::Implied,
@@ -631,7 +671,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         addressing: Addressing::Implied,
     }),
     None,
-    None,
+    Some(Opcode {
+        name: "JMP",
+        addressing: Addressing::AbsoluteXIndirect,
+    }),
     Some(Opcode {
         name: "ADC",
         addressing: Addressing::AbsoluteX,
@@ -959,7 +1002,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "DEC",
         addressing: Addressing::ZeroPageX,
     }),
-    None,
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::IndirectLongY,
+    }),
     Some(Opcode {
         name: "CLD",
         addressing: Addressing::Implied,
@@ -973,7 +1019,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         addressing: Addressing::Implied,
     }),
     None,
-    None,
+    Some(Opcode {
+        name: "JML",
+        addressing: Addressing::AbsoluteIndirectLong,
+    }),
     Some(Opcode {
         name: "CMP",
         addressing: Addressing::AbsoluteX,
@@ -1084,7 +1133,7 @@ const OPCODES: [Option<Opcode>; 256] = [
     None,
     Some(Opcode {
         name: "JSR",
-        addressing: Addressing::XIndirect,
+        addressing: Addressing::AbsoluteXIndirect,
     }),
     Some(Opcode {
         name: "SBC",
