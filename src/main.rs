@@ -31,7 +31,7 @@ struct Args {
     brk: bool,
 }
 
-const END_OF_BLOCK: [&str; 3] = ["RTS", "RTL", "JMP"];
+const END_OF_BLOCK: [&str; 5] = ["RTS", "RTL", "JMP", "BRA", "BRL"];
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
