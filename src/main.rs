@@ -945,7 +945,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "DEC",
         addressing: Addressing::ZeroPage,
     }),
-    None,
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::ZeroPageLong,
+    }),
     Some(Opcode {
         name: "INY",
         addressing: Addressing::Implied,
@@ -1024,7 +1027,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "DEC",
         addressing: Addressing::AbsoluteX,
     }),
-    None,
+    Some(Opcode {
+        name: "CMP",
+        addressing: Addressing::AbsoluteLongX,
+    }),
     // 0xE0
     Some(Opcode {
         name: "CPX",
