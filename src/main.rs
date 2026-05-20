@@ -535,7 +535,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "LSR",
         addressing: Addressing::Accumulator,
     }),
-    None,
+    Some(Opcode {
+        name: "PHK",
+        addressing: Addressing::Implied,
+    }),
     Some(Opcode {
         name: "JMP",
         addressing: Addressing::Absolute,
@@ -998,7 +1001,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "DEX",
         addressing: Addressing::Implied,
     }),
-    None,
+    Some(Opcode {
+        name: "WAI",
+        addressing: Addressing::Implied,
+    }),
     Some(Opcode {
         name: "CPY",
         addressing: Addressing::Absolute,
