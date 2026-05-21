@@ -59,7 +59,7 @@ fn main() -> io::Result<()> {
     while file.seek(SeekFrom::Current(0))? < end {
         let opcode = file.read_u8()?;
         let addr = current_address;
-        print!("{current_address:06X}: ");
+        eprint!("{current_address:06X}: ");
 
         current_address += 1;
         if let Some(Some(opcode)) = OPCODES.get(opcode as usize) {
@@ -204,12 +204,12 @@ fn main() -> io::Result<()> {
             };
 
             if stop_on_brk && asm == "BRK" {
-                println!("BRK hit!");
+                eprintln!("BRK hit!");
                 return Ok(());
             }
 
             if stop_on_sus_opcodes && MAYBE_INVALID_OPCODES.contains(&asm) {
-                println!("{asm} hit!");
+                eprintln!("{asm} hit!");
                 return Ok(());
             }
 
@@ -222,7 +222,7 @@ fn main() -> io::Result<()> {
             };
 
             let output = format!("{asm}{follow}");
-            println!("{asm}{follow}");
+            eprintln!("{asm}{follow}");
             assembly.push((format!("L{addr:06X}"), output));
 
             if is_end_of_block {
@@ -313,7 +313,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "ASL",
         addressing: Addressing::ZeroPage,
     }),
-    None,
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::ZeroPageLong,
+    }),
     Some(Opcode {
         name: "PHP",
         addressing: Addressing::Implied,
@@ -785,7 +788,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "STA",
         addressing: Addressing::IndirectY,
     }),
-    None,
+    Some(Opcode {
+        name: "STA",
+        addressing: Addressing::Indirect,
+    }),
     None,
     Some(Opcode {
         name: "STY",
@@ -848,7 +854,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "LDX",
         addressing: Addressing::Immediate(Register::Indexes),
     }),
-    None,
+    Some(Opcode {
+        name: "LDA",
+        addressing: Addressing::StackRelative,
+    }),
     Some(Opcode {
         name: "LDY",
         addressing: Addressing::ZeroPage,
