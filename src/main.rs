@@ -415,7 +415,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "JSL",
         addressing: Addressing::AbsoluteLong,
     }),
-    None,
+    Some(Opcode {
+        name: "AND",
+        addressing: Addressing::StackRelative,
+    }),
     Some(Opcode {
         name: "BIT",
         addressing: Addressing::ZeroPage,
@@ -678,7 +681,10 @@ const OPCODES: [Option<Opcode>; 256] = [
     }),
     None,
     None,
-    None,
+    Some(Opcode {
+        name: "STZ",
+        addressing: Addressing::ZeroPageX,
+    }),
     Some(Opcode {
         name: "ADC",
         addressing: Addressing::ZeroPageX,
@@ -687,7 +693,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "ROR",
         addressing: Addressing::ZeroPageX,
     }),
-    None,
+    Some(Opcode {
+        name: "ADC",
+        addressing: Addressing::IndirectLongY,
+    }),
     Some(Opcode {
         name: "SEI",
         addressing: Addressing::Implied,
