@@ -40,6 +40,12 @@ const MAYBE_INVALID_OPCODES: [&str; 3] = ["COP", "WAI", "BRK"];
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
+
+    if args.end < args.start {
+        eprintln!("End address is lower than start address.");
+        return Ok(());
+    }
+
     let mut file = File::open(&args.filename)?;
 
     let bank = (args.start >> 16) - 0x80;
@@ -401,7 +407,10 @@ const OPCODES: [Option<Opcode>; 256] = [
         name: "ASL",
         addressing: Addressing::AbsoluteX,
     }),
-    None,
+    Some(Opcode {
+        name: "ORA",
+        addressing: Addressing::AbsoluteLongX,
+    }),
     // 0x20
     Some(Opcode {
         name: "JSR",
